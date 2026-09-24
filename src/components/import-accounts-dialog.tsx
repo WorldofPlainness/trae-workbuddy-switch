@@ -13,7 +13,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "@/lib/api";
+import { displayText } from "@/lib/display-text";
 import type { ImportPreviewAccount, Region } from "@/lib/types";
+import { useT, type Translate } from "@/lib/i18n";
 
 interface Props {
   open: boolean;
@@ -25,12 +27,20 @@ interface Props {
 }
 
 /** 导入预览账号展示名（脱敏展示：昵称/邮箱/uid）。 */
-function previewLabel(a: ImportPreviewAccount): string {
-  return a.nickname || a.email || a.uid || `第 ${a.index + 1} 项`;
+function previewLabel(a: ImportPreviewAccount, t: Translate): string {
+  // 必须归一：`||` 链会把**对象**原样返回，而调用方直接把它当 React 子节点渲染
+  // ⇒ React 抛「Objects are not valid as a React child」⇒ 整棵树卸载（issue #2）。
+  return (
+    displayText(a.nickname) ||
+    displayText(a.email) ||
+    displayText(a.uid) ||
+    t("wbAccounts.dialog.importItemFallback", { index: a.index + 1 })
+  );
 }
 
 /** 导入账号弹框：选 JSON 文件 → 后端解析预览 → 勾选账号 → 导入合并。 */
 export function ImportAccountsDialog({ open, onOpenChange, onImported, region }: Props) {
+  const t = useT();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState("");
   const [fileText, setFileText] = useState("");
@@ -118,8 +128,8 @@ export function ImportAccountsDialog({ open, onOpenChange, onImported, region }:
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="min-w-0 overflow-x-hidden">
         <DialogHeader>
-          <DialogTitle>导入账号</DialogTitle>
-          <DialogDescription>选择 JSON 文件，勾选要导入的账号。</DialogDescription>
+          <DialogTitle>{t("wbAccounts.dialog.importTitle")}</DialogTitle>
+          <DialogDescription>{t("wbAccounts.dialog.importDesc")}</DialogDescription>
         </DialogHeader>
 
         <input
@@ -133,14 +143,14 @@ export function ImportAccountsDialog({ open, onOpenChange, onImported, region }:
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={chooseFile} disabled={busy}>
             <FileUp />
-            选择文件
+            {t("wbAccounts.dialog.chooseFile")}
           </Button>
           {fileName && <span className="truncate text-xs text-muted-foreground">{fileName}</span>}
         </div>
 
         {parsing && (
           <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-            <Loader2 className="animate-spin" /> 正在解析…
+            <Loader2 className="animate-spin" /> {t("wbAccounts.dialog.parsing")}
           </div>
         )}
 
@@ -148,10 +158,10 @@ export function ImportAccountsDialog({ open, onOpenChange, onImported, region }:
           <>
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
-                共 {preview.length} 个账号，已选 {selected.size} 个
+                {t("wbAccounts.dialog.importCount", { n: preview.length, m: selected.size })}
               </span>
               <button type="button" className="text-primary hover:underline" onClick={toggleAll}>
-                {allSelected ? "取消全选" : "全选"}
+                {allSelected ? t("wbAccounts.dialog.deselectAll") : t("wbAccounts.dialog.selectAll")}
               </button>
             </div>
             <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
@@ -166,8 +176,8 @@ export function ImportAccountsDialog({ open, onOpenChange, onImported, region }:
                     checked={selected.has(a.index)}
                     onChange={() => toggle(a.index)}
                   />
-                  <span className="min-w-0 flex-1 truncate text-sm">{previewLabel(a)}</span>
-                  {!a.hasToken && <Badge variant="outline">缺少 token</Badge>}
+                  <span className="min-w-0 flex-1 truncate text-sm">{previewLabel(a, t)}</span>
+                  {!a.hasToken && <Badge variant="outline">{t("wbAccounts.dialog.missingToken")}</Badge>}
                 </label>
               ))}
             </div>
@@ -182,10 +192,10 @@ export function ImportAccountsDialog({ open, onOpenChange, onImported, region }:
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-            取消
+            {t("wbAccounts.dialog.cancel")}
           </Button>
           <Button onClick={doImport} disabled={busy || parsing || selected.size === 0}>
-            {busy ? "导入中…" : "导入勾选账号"}
+            {busy ? t("wbAccounts.dialog.importing") : t("wbAccounts.dialog.importSelected")}
           </Button>
         </DialogFooter>
       </DialogContent>

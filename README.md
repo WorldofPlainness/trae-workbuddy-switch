@@ -15,6 +15,8 @@
 
 **WorkBuddy / TraeWork 多账号管理工具**：OAuth 扫码登录、一键切换登录态、积分到期监控与自动签到、Token 用量统计，并可以把模型额度以 OpenAI / Anthropic 兼容接口提供给本机其它工具。
 
+> ⚠️ **免责声明**：本项目是**非官方的第三方源码公开工具**（source-available，非商业许可），与 WorkBuddy、CodeBuddy、Trae / TraeWork 及其各自权利人不存在隶属、授权或背书关系。它会读写本机第三方客户端的认证数据、按你的配置自动发起请求，并可将你的模型额度通过本地接口转发给其它工具。使用前请完整阅读[免责声明](docs/DISCLAIMER.md)，自行评估风险并确保使用方式符合相关服务条款。
+
 同一套界面提供三种形态：
 
 | 形态 | 获取方式 | 说明 |
@@ -300,6 +302,10 @@ src/                     # 前端：components / pages / lib（api.ts 双通道�
 npm/                     # npm 包（**尚未发布**）：主包 @nextagentx/buddy-switch + 5 个平台分包
 ```
 
+## 参与贡献
+
+**欢迎一切形式的贡献，也欢迎 PR。** 提 Issue、补文档、修 Bug、加功能都算 —— 完整的贡献指引（能做什么、PR 自检清单、本仓库的几条代码约定）见 **[CONTRIBUTING.md](CONTRIBUTING.md)**（[English](CONTRIBUTING.en.md)）。
+
 ## 支持这个项目
 
 如果 Buddy Switch 帮到了你，可以请作者喝杯饮料 ☕
@@ -320,6 +326,25 @@ npm/                     # npm 包（**尚未发布**）：主包 @nextagentx/bu
 </table>
 
 
+## 致谢
+
+本项目在实现过程中参考了以下开源项目，在此向作者致谢：
+
+- [changexbc/workbuddy-switch](https://github.com/changexbc/workbuddy-switch) —— 借鉴了 WorkBuddy 账号数据格式与多账号切换的整体思路。
+- [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) —— 借鉴了将 WorkBuddy 模型额度封装为 OpenAI 兼容接口、对外提供 API 服务的思路。
+
+以上项目各自遵循其自身许可；本项目为独立实现，与上述项目之间不存在隶属、合作或背书关系。相关名称与商标归各自权利人所有。本项目拥有独立的代码库、发布通道与数据目录，不会替换、覆盖或改写其他项目的升级源或数据目录。
+
+## 免责声明
+
+使用本项目即表示你已完整阅读、理解并同意全部免责条款；如不同意，请立即停止使用并卸载。
+
+完整条款见 **[docs/DISCLAIMER.md](docs/DISCLAIMER.md)**（[English](docs/DISCLAIMER.en.md)），共 6 条：非官方第三方工具、服务条款与合规自理、数据写入与备份、自动化行为风险、API 网关暴露风险、按「原样」提供。
+
 ## 许可
 
-[MIT](./LICENSE)
+本项目采用 **[PolyForm Noncommercial License 1.0.0](./LICENSE)**：**个人非商业使用是允许的，商业使用不被授权**（商业用途须事先取得作者的书面授权）。
+
+- 条款全文：[LICENSE](./LICENSE)
+- 白话说明、允许与禁止的具体情形、常见问题、以及 2026-09-22 之前版本的 MIT 说明：[docs/LICENSING.md](docs/LICENSING.md)
+- 如需商业授权，请通过本仓库 Issues 联系作者。

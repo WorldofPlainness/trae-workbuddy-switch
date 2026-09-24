@@ -46,7 +46,7 @@
 |:--|:--|:--|:--:|:--:|
 | G-A01 | 双产品线状态 Tabs（cn/global）`AccountsPage.tsx:213-225`，页头副标题「分别管理国内版与国际版」`:207-209` | 变体切换器 `TraeAccountsPage.tsx:274-277` + `trae-variant-switch.tsx:33` | A | P0 |
 | G-A02 | region 由页内 Tab 状态驱动 | 变体由侧栏/URL `useTraeVariant()` 驱动 `TraeAccountsPage.tsx:86-95` | A | P0 |
-| G-A03 | 自动签到**定时**开关 `AccountsPage.tsx:428-441`（保存失败提示 `:437`） | 「跳过今日已签到」开关 `TraeAccountsPage.tsx:189-202`（语义替身，无调度器） | B | P1 |
+| G-A03 | 自动签到**定时**开关 `AccountsPage.tsx:428-441`（保存失败提示 `:437`） | **2026-09-22 已补齐（原「语义替身」判定作废）**：排程任务 `trae_checkin` —— 工具栏「自动签到」开关（`TraeAccountsPage.tsx`）+ 设置页同名开关与小时表（`TraeSettingsPage.tsx` 的「自动签到」组）。原「跳过今日已签到」开关保留，语义收窄为**策略**（怎么签），与「何时签」分属两层 | — 已对齐 | — |
 | G-A04 | 自动旅行开关 + travelMap 轮询 `AccountsPage.tsx:114-131, 258-261, 443-455` | 无（`TraeAccountsPage.tsx:80` 注释声明不存在） | C | P2 |
 | G-A05 | 「CodeBuddy CLI 接入」折叠卡 | 无（`TraeAccountsPage.tsx:80`） | C | P2 |
 | G-A06 | 账号卡积分包进度条 + 近期到期 `account-card.tsx:447-465` | `trae-account-card.tsx` 无该区块（无按包进度，见 `credits.rs:572-648`） | B | P1 |
@@ -56,6 +56,11 @@
 | G-A10 | 添加账号对话框（多字段） | 粘贴 JWT 添加 `trae_add_account`（`api.rs:162`） | A | P0 |
 
 > 已对齐、无需改动：页头标题/副标题、「添加与迁移账号」横幅、环境说明行、空态卡、账号工具栏（`账号[N]` 徽章 + 紧凑 + 刷新）、卡片栅格、删除确认、导入/导出对话框（见 `TraeAccountsPage.tsx:66-81`）。
+>
+> ⚠️ **G-A03 已闭合**（2026-09-22）：Trae 侧不再是「无调度器的语义替身」——新增了独立排程任务
+> `trae_checkin`（`crates/buddy-switch-core/src/modules/schedule.rs` 的 `define_schedule_tasks!`），
+> 到点触发 + 进程启动补跑，两个区域各签一轮。**本文件的汇总计数（§0 TL;DR）是生成时的静态快照，
+> 未随此行重算**；引用条数时请自行扣除已闭合项。
 
 #### 2.1.2 TokenStats Token 统计（`TokenStatsPage.tsx` ↔ `TraeTokenStatsPage.tsx`）
 
@@ -100,10 +105,15 @@
 | G-S02 | region 相关设置项 | 变体相关（侧栏驱动 `TraeSettingsPage.tsx:107`） | A | P1 |
 | G-S03 | （WB 无独立能力面板） | 「平台能力」面板 + `CapabilityBadge` `TraeSettingsPage.tsx:1198-1205` | A（Trae 侧更细） | P1 |
 | G-S04 | （WB 无设备标识重置） | 6 层设备标识重置 `TraeSettingsPage.tsx:1159-1195`；非 Windows 返回 Unsupported `platform.rs:940-959` | A（含 C 分支） | P1 |
-| G-S05 | GitHub 配置 / 更新 / 开机自启 | 全局共用命令，**非 Trae 特化差距** | — 非差距 | — |
+| G-S05 | 外观 / 开机自启 / 自动更新（应用级） | **已收口到共享模块** `src/components/app-settings.tsx`（两模块同一份实现）；入口固定在侧栏底部「版本号上方」（`App.tsx` → `AppSettingsEntry`），不再各自出现在设置页 | — 非差距 | — |
 | G-S06 | 无 | 「登录态快照」profiles `TraeSettingsPage.tsx:604-826` | A（反向，Trae 独有） | P2 |
 
 > 两设置页**共用** `settings-primitives.tsx:33/47/76`（`SettingsGroup`/`SettingsRow`/`SettingsFieldRow`），不得各写一份。
+>
+> **应用级三块**（外观 / 开机自启 / 自动更新）另有一层共享：`components/app-settings.tsx`。
+> 共享的判据是**有无产品耦合** —— 纯版式原语、以及不读 `Region`/`TraeVariant` 的
+> 应用级业务块可以共享；依赖产品上下文的块（版本与账号库、网关、登录态快照、
+> 设备标识…）**仍然各自实现**，不得因为「长得像」而合并。
 
 ### 2.2 组件级
 
@@ -192,7 +202,7 @@ WorkBuddy 命令表见 `src-tauri/src/lib.rs:155-217`；Trae 命令表见 `src-t
 
 | ID | 用户故事 | 验收标准 |
 |:--|:--|:--|
-| R-P1-1 | 作为 Trae 用户，我希望搜索**跳过已签到**能有与 WB「自动签到」等价的可见开关 | 账号工具栏存在该开关，切换即持久化（`TraeAccountsPage.tsx:189-202`）；文案明确它只是「批量签到策略」，不暗示后台定时 |
+| R-P1-1 | 作为 Trae 用户，我希望搜索**跳过已签到**能有与 WB「自动签到」等价的可见开关 | **已满足且更强**（2026-09-22）：工具栏「自动签到」开关直接读写排程任务 `trae_checkin`（真有后台调度，不再是语义替身），与 WB 同名开关**同位同义**；「跳过已签到」保留为**策略**开关，文案须说明它管「怎么签」而非「何时签」 |
 | R-P1-2 | 作为 Trae 用户，我希望账号卡能显示积分包到期信息 | 若 Trae 数据可取到包级到期，则显示；取不到则显示「无包级数据」而非假进度条（依赖 B 类后端聚合） |
 | R-P1-3 | 作为 Trae 用户，我希望 Token 统计有「按模型/按账号」分布 | 分布区存在，且分母=同页总览同期的总量（可交叉验证） |
 | R-P1-4 | 作为 Trae 用户，我希望积分明细能区分「明细 / 请求用量」 | 若数据支持请求用量分栏则加 Tabs；不支持则单栏并注明口径 |
@@ -205,7 +215,9 @@ WorkBuddy 命令表见 `src-tauri/src/lib.rs:155-217`；Trae 命令表见 `src-t
 
 - 网关子区块组件化拆分（`gateway/*` → Trae 专用组件，消除漂移）。
 - 「Token 活动」整年热力网格、「用量分布」按项目维度（**依赖 B 类后端聚合，Trae 网关日志无项目字段，需先证实数据可得性**）。
-- 目标/渠道类增强（自动轮换、GitHub 配置、定时任务）——**C 类，见第 4 节**。
+- 目标/渠道类增强（自动轮换、GitHub 配置、**定时任务**）——**C 类，见第 4 节**。
+  ⚠️ 2026-09-22 起「定时任务」不再是整类 C：**自动签到**（`trae_checkin`）已落地并复用
+  WorkBuddy 那套排程器（见 G-A03）；仍为 C 的是该句里的另外两项。
 - 账号策略卡语义对齐（`account_strategy` → 账号池卡）。
 
 ---

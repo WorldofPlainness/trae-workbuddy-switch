@@ -37,12 +37,16 @@ import type {
   ScheduleConfig,
   ScheduleRunResult,
   Session,
+  SwitchConfig,
   SwitchResult,
   TravelConfig,
   TravelStatus,
   UpdateInfo,
 } from "./types";
-import { DEMO_UNAVAILABLE_MESSAGE, demoModeEnabled } from "./demo-mode";
+import { demoModeEnabled, demoUnavailableMessage } from "./demo-mode";
+import { displayText } from "./display-text";
+import { localizeCodedStrings, localizeError } from "./error-code";
+import { t } from "./i18n";
 import { screenshotDemoResponse } from "./screenshot-demo";
 import type {
   TraeAccount,
@@ -89,6 +93,7 @@ const DEMO_READ_COMMANDS = new Set([
   "get_checkin_logs", "get_auto_rotate_config", "rotate_status", "get_rotate_logs",
   "get_github_config", "check_update", "get_launch_at_login_enabled", "switch_progress",
   "get_travel_status", "get_auto_travel_config", "get_schedule_config",
+  "get_switch_config",
   // API 网关只读命令（演示站需返回虚构数据，否则 build:demo 报错）
   "get_gateway_config", "gateway_status", "list_api_keys", "get_gateway_models",
   "get_account_strategy", "get_gateway_logs",
@@ -138,6 +143,7 @@ const ROUTES: Record<string, Route> = {
   switch_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/switch" },
   detect_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/detect" },
   delete_account: { method: "POST", path: "/api/delete" },
+  set_account_remark: { method: "POST", path: "/api/account/remark" },
   oauth_start: { method: "POST", path: "/api/oauth/start" },
   oauth_status: { method: "POST", path: "/api/oauth/status" },
   import_local: { method: "POST", path: "/api/import-local" },
@@ -161,6 +167,8 @@ const ROUTES: Record<string, Route> = {
   get_travel_status: { method: "GET", path: "/api/travel/status" },
   get_auto_travel_config: { method: "GET", path: "/api/travel/config" },
   save_auto_travel_config: { method: "POST", path: "/api/travel/config" },
+  get_switch_config: { method: "GET", path: "/api/switch/config" },
+  save_switch_config: { method: "POST", path: "/api/switch/config" },
   get_auto_rotate_config: { method: "GET", path: "/api/rotate/config" },
   save_auto_rotate_config: { method: "POST", path: "/api/rotate/config" },
   get_schedule_config: { method: "GET", path: "/api/schedule/config" },
@@ -244,6 +252,8 @@ const ROUTES: Record<string, Route> = {
   delete_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/delete" },
   // 打开 Trae 数据目录（非 Windows 返回结构化 Unsupported）。
   open_trae_data_dir: { method: "POST", path: "/api/trae/open-data-dir" },
+  // 启动该变体的 Trae 客户端（OAuth 网页登录的前置动作：客户端首次启动才写出设备凭证）。
+  trae_launch_client: { method: "POST", path: "/api/trae/launch-client" },
   get_trae_gateway_logs: { method: "GET", path: "/api/trae/gateway/logs" },
   clear_trae_gateway_logs: { method: "POST", path: "/api/trae/gateway/logs/clear" },
 };
@@ -261,7 +271,7 @@ function queryString(args?: Record<string, unknown>): string {
 
 async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const route = ROUTES[cmd];
-  if (!route) throw new Error(`webui 模式暂不支持该操作: ${cmd}`);
+  if (!route) throw new Error(t("shared.api.unsupportedInWebui", { cmd }));
   let res: Response;
   try {
     const url =
@@ -274,24 +284,26 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
       body: route.method === "POST" ? JSON.stringify(args ?? {}) : undefined,
     });
   } catch {
-    throw new Error(`无法连接 Buddy Switch 服务（${API_BASE}），请先运行 \`buddy-switch\``);
+    throw new Error(t("shared.api.unreachable", { base: API_BASE }));
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.message || data.error || `请求失败 (${res.status})`);
+    throw new Error(data.message || data.error || t("shared.api.requestFailed", { status: res.status }));
   }
-  return data as T;
+  // 数据带上来的错误（`error` / `warning` 这类字段）在**这里**统一本地化，
+  // 而不是靠每个渲染点自己记得剥结构尾 —— 见 `error-code.ts` 的说明。
+  return localizeCodedStrings(data) as T;
 }
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (demoModeEnabled) {
     if (cmd === "get_credit_statistics" && args?.refresh === true) {
-      throw new Error(DEMO_UNAVAILABLE_MESSAGE);
+      throw new Error(demoUnavailableMessage());
     }
-    if (!DEMO_READ_COMMANDS.has(cmd)) throw new Error(DEMO_UNAVAILABLE_MESSAGE);
-    return screenshotDemoResponse(cmd, args) as T;
+    if (!DEMO_READ_COMMANDS.has(cmd)) throw new Error(demoUnavailableMessage());
+    return localizeCodedStrings(screenshotDemoResponse(cmd, args)) as T;
   }
-  if (!isWebui()) return invoke<T>(cmd, args);
+  if (!isWebui()) return localizeCodedStrings(await invoke<T>(cmd, args)) as T;
   return httpCall<T>(cmd, args);
 }
 
@@ -304,12 +316,57 @@ function regionArg(region?: Region): Record<string, unknown> {
   return region ? { region } : {};
 }
 
+/**
+ * 把 `AccountMeta` 的展示字段收敛成 `string | null`（规则见 `lib/display-text.ts`）。
+ *
+ * 后端已经归一过一遍（Rust `account::display_str`，含回归护栏），这里是**第二道闸**：
+ * `AccountMeta` 会流进十几处字符串拼接与 JSX 子节点（`{name}` / `{remark}` /
+ * `email.split("@")` / `remark.trim()`），只要有一处漏了脏值就可能让整棵树崩掉。
+ * 在这一层收口，比在十几个消费点各防一次可靠 —— 新增消费点自动被覆盖。
+ *
+ * ⚠️ **时间戳字段刻意不参与归一**：`types.ts` 声明为 `number | null`，
+ * `account-card.tsx` 按 `typeof === "number"` 判定过期，字符串化会让过期提示静默消失。
+ */
+function normalizeAccountMeta(account: AccountMeta): AccountMeta {
+  return {
+    ...account,
+    // `id` 在类型上是非空 `string`；脏值退化成空串，后续按 id 的操作会**响亮失败**
+    //（后端回「账号不存在」），而不是把 `[object Object]` 撒进 key 与请求参数。
+    id: displayText(account.id) ?? "",
+    uid: displayText(account.uid),
+    nickname: displayText(account.nickname),
+    email: displayText(account.email),
+    enterpriseName: displayText(account.enterpriseName),
+    needsReloginReason: displayText(account.needsReloginReason),
+    remark: displayText(account.remark),
+  };
+}
+
+/** 同 {@link normalizeAccountMeta}，作用于 `status.current`（区域 Tab 与徽标 tooltip 都读它）。 */
+function normalizeAppStatus(status: AppStatus): AppStatus {
+  if (!status?.current) return status;
+  return {
+    ...status,
+    current: {
+      uid: displayText(status.current.uid),
+      nickname: displayText(status.current.nickname),
+      email: displayText(status.current.email),
+    },
+  };
+}
+
 export function getStatus(region?: Region): Promise<AppStatus> {
-  return call("get_status", region ? { region } : undefined);
+  return call<AppStatus>("get_status", region ? { region } : undefined).then(normalizeAppStatus);
 }
 
 export function getAccounts(region?: Region): Promise<{ accounts: AccountMeta[] }> {
-  return call("get_accounts", region ? { region } : undefined);
+  return call<{ accounts: AccountMeta[] }>(
+    "get_accounts",
+    region ? { region } : undefined,
+  ).then((result) => ({
+    ...result,
+    accounts: (result.accounts ?? []).map(normalizeAccountMeta),
+  }));
 }
 
 export function getCodebuddyCliStatus(): Promise<CodeBuddyCliStatus> {
@@ -366,11 +423,16 @@ export function oauthStart(region?: Region): Promise<OAuthStartResult> {
 }
 
 export function oauthStatus(loginId: string, region?: Region): Promise<OAuthPollResult> {
-  return call("oauth_status", { loginId, ...regionArg(region) });
+  return call<OAuthPollResult>("oauth_status", { loginId, ...regionArg(region) }).then((poll) =>
+    poll.result ? { ...poll, result: normalizeAccountMeta(poll.result) } : poll,
+  );
 }
 
 export function importLocal(region?: Region): Promise<{ ok: boolean; account: AccountMeta }> {
-  return call("import_local", region ? { region } : undefined);
+  return call<{ ok: boolean; account: AccountMeta }>(
+    "import_local",
+    region ? { region } : undefined,
+  ).then((result) => ({ ...result, account: normalizeAccountMeta(result.account) }));
 }
 
 export function exportAccounts(accountIds: string[], region?: Region): Promise<{ ok: boolean; accounts: AccountRecord[] }> {
@@ -409,6 +471,34 @@ export function switchAccount(args: {
   return call("switch_account", args as unknown as Record<string, unknown>);
 }
 
+/**
+ * 设置账号备注（**字段级更新**）。
+ *
+ * 刻意**不**提供「整条账号写回」的口子：前端手上只有脱敏的 `AccountMeta`，
+ * 整条写回会把 `access_token` / `refresh_token` 一并抹掉（账号当场失效且无报错）。
+ * 传空串即清空备注。
+ */
+export function setAccountRemark(
+  accountId: string,
+  remark: string,
+  region?: Region,
+): Promise<AccountMeta> {
+  return call<AccountMeta>("set_account_remark", { accountId, remark, ...regionArg(region) }).then(
+    normalizeAccountMeta,
+  );
+}
+
+/** 读取账号切换与账号列表展示配置（全局单份）。 */
+export function getSwitchConfig(): Promise<SwitchConfig> {
+  return call("get_switch_config");
+}
+
+export function saveSwitchConfig(config: SwitchConfig): Promise<SwitchConfig> {
+  return call("save_switch_config", {
+    config: config as unknown as Record<string, unknown>,
+  });
+}
+
 /** 切换进度（webui 轮询用；桌面端走事件，此函数无副作用）。 */
 export function switchProgress(): Promise<{ running: boolean; progress: string | null }> {
   return call("switch_progress");
@@ -417,6 +507,15 @@ export function switchProgress(): Promise<{ running: boolean; progress: string |
 export function listSessions(region?: Region): Promise<{
   sessions: Session[];
   current: string | null;
+  /**
+   * 会话来源：`db`=正常索引；`scan`=索引库不可读已降级扫描 projects 目录；
+   * `empty`=库与 projects 皆空（账号确实没有会话）；
+   * `no-dir`=数据目录里连 `workbuddy.db` / `projects/` 都不存在（客户端刚重装 / 重置过），
+   * 必须与 `empty` 区分显示，否则会把「数据目录空了」误导成「账号没有会话」。
+   */
+  source?: "db" | "scan" | "empty" | "no-dir";
+  /** 降级 / 异常提示（索引库不可读、扫描结果不完整等）。普通场景为 null。 */
+  warning?: string | null;
 }> {
   return call("list_sessions", region ? { region } : undefined);
 }
@@ -471,7 +570,7 @@ export function migrateAccountData(
 export function openPermissionSettings(
   target?: "app_management" | "all_files",
 ): Promise<void> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (isWebui()) return Promise.resolve();
   return call("open_permission_settings", { target: target ?? "app_management" });
 }
@@ -484,11 +583,11 @@ export function checkAuthPermission(): Promise<{
   dir?: string;
   hint?: string;
 }> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (isWebui()) {
     return Promise.resolve({
       ok: true,
-      message: "webui 模式由服务进程（终端启动）的权限决定，无需额外授权",
+      message: t("shared.api.webuiPermissionByProcess"),
       hint: "",
     });
   }
@@ -497,7 +596,7 @@ export function checkAuthPermission(): Promise<{
 
 /** 在 Finder 中显示当前 App（桌面端专用；webui 无操作）。 */
 export function revealAppInFinder(): Promise<void> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (isWebui()) return Promise.resolve();
   return call("reveal_app_in_finder");
 }
@@ -535,7 +634,7 @@ export async function getCheckinStatus(accountId: string, region?: Region): Prom
     const one = all.accounts.find((a) => a.accountId === accountId);
     return one
       ? { ok: one.ok, todayCheckedIn: one.todayCheckedIn, error: one.error, raw: one.raw }
-      : { ok: false, todayCheckedIn: false, error: "未找到账号" };
+      : { ok: false, todayCheckedIn: false, error: t("shared.api.accountNotFound") };
   }
   return call("get_checkin_status", { accountId, ...regionArg(region) });
 }
@@ -653,7 +752,9 @@ export function getRotateLogs(): Promise<{ logs: RotateLog[] }> {
 }
 
 export function refreshAccountToken(accountId: string, region?: Region): Promise<AccountMeta> {
-  return call("refresh_account_token", { accountId, ...regionArg(region) });
+  return call<AccountMeta>("refresh_account_token", { accountId, ...regionArg(region) }).then(
+    normalizeAccountMeta,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -740,7 +841,7 @@ export function checkUpdate(proxy?: string, force?: boolean): Promise<UpdateInfo
 
 /** 重启 App（桌面端专用；webui 无操作）。守卫在 wrapper 内部，保证「webui 不可达」由本函数自证。 */
 export function relaunchApp(): Promise<void> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (isWebui()) return Promise.resolve();
   return call("relaunch_app");
 }
@@ -758,16 +859,27 @@ export function getLaunchAtLoginEnabled(): Promise<boolean> {
 
 /** 注册 / 移除系统开机自启，返回回读后的权威状态（桌面端）。 */
 export function setLaunchAtLoginEnabled(enabled: boolean): Promise<boolean> {
-  if (demoModeEnabled) return Promise.reject(new Error(DEMO_UNAVAILABLE_MESSAGE));
+  if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (!isDesktop()) return Promise.resolve(false);
   return call("set_launch_at_login_enabled", { enabled });
 }
 
-/** 把 Tauri command / HTTP 抛出的错误统一为 Error。 */
+/**
+ * 把 Tauri command / HTTP 抛出的错误统一为 Error，并**按当前语言**渲染。
+ *
+ * 这里是全应用错误文案的唯一裁决点：后端把「文本 + 错误码 + 参数」编进同一个字符串
+ * （见 `lib/error-code.ts`），本函数解出码后交给 `localizeError` 选文案。
+ * 因此**所有已经用 `asError(e)` 的调用点无需逐个改造**，就同时获得中英两种文案。
+ *
+ * 中文界面下结果与改造前**逐字节相同**：`localizeError` 对中文直接返回后端原文，
+ * 而结构尾已在解码时剥掉。
+ */
 export function asError(e: unknown): string {
-  if (typeof e === "string") return e;
-  if (e instanceof Error) return e.message;
-  return JSON.stringify(e ?? "未知错误");
+  if (typeof e === "string") return localizeError(e);
+  if (e instanceof Error) return localizeError(e.message);
+  if (e === null || e === undefined) return t("common.unknownError");
+  const serialized = JSON.stringify(e);
+  return localizeError(serialized ?? t("common.unknownError"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,6 +1332,19 @@ export function openTraeDataDir(
   variant?: TraeVariantId | null,
 ): Promise<{ ok?: boolean; path?: string }> {
   return call("open_trae_data_dir", variantArgs(variant));
+}
+
+/**
+ * 启动**该变体**的 Trae 客户端。
+ *
+ * 客户端从没启动过时没有 icube 设备凭证，OAuth 网页登录必然以 `dataDirMissing` 失败；
+ * 这个动作让用户一键跨过前置条件。**成功只表示已发起启动**，
+ * 凭证是否已就绪要由用户点登录后再判（见 Rust 侧 `handlers::launch_client_for`）。
+ */
+export function launchTraeClient(
+  variant?: TraeVariantId | null,
+): Promise<{ ok?: boolean; path?: string; variant?: string }> {
+  return call("trae_launch_client", variantArgs(variant));
 }
 
 /** 最近 N 条网关请求日志（元数据）。 */

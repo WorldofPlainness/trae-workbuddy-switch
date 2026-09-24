@@ -104,10 +104,18 @@ fn build_app_status(region: Region) -> AppStatus {
     };
     let current = auth.as_ref().and_then(|a| {
         let acct = a.get("account").cloned().unwrap_or_else(|| json!({}));
+        // 展示字段先归一成「字符串或 null」再下发：认证文件里 `nickname` 可能是对象
+        // （见 core `account::display_str` 的文档），裸透传会让前端整棵树崩掉
+        // ⇒ 窗口一片白（issue #2）。**与 server 侧 `api.rs::api_status` 逐字同构**。
+        //
+        // `nickname` 额外多一道**账号库回落**：新版客户端把它存成加密信封，
+        // 读不到时若直接下发 null，界面就只能显示 uid（用户报障）。回落规则与
+        // 「为什么账号库是同源的」全在 `account::current_nickname_for` 一处，
+        // 这里**不要**自己再写一遍条件。
         Some(json!({
-            "uid": acct.get("uid"),
-            "nickname": acct.get("nickname"),
-            "email": acct.get("email"),
+            "uid": account::display_str(&acct, "uid"),
+            "nickname": account::current_nickname_for(region, &acct),
+            "email": account::display_str(&acct, "email"),
         }))
     });
     AppStatus {
@@ -217,6 +225,22 @@ pub fn delete_account(account_id: String, region: Option<String>) -> Result<Valu
     let region = parse_region(region.as_deref());
     account::delete_account_for(region, &account_id)?;
     Ok(json!({ "ok": true }))
+}
+
+/// POST /api/account/remark —— 设置账号备注（**字段级更新**，不触碰 token）。
+///
+/// 同步 command 即可：只读一个小 JSON、改一个键、原子写回。
+#[tauri::command(rename_all = "camelCase")]
+pub fn set_account_remark(
+    account_id: String,
+    remark: Option<String>,
+    region: Option<String>,
+) -> Result<Value, String> {
+    if account_id.trim().is_empty() {
+        return Err("缺少 accountId".to_string());
+    }
+    let region = parse_region(region.as_deref());
+    account::set_account_remark_for(region, &account_id, remark.as_deref())
 }
 
 /// POST /api/oauth/start —— 发起 OAuth 扫码登录（按 region）。
@@ -451,15 +475,24 @@ pub fn switch_progress() -> Value {
 }
 
 /// GET /api/sessions —— 当前账号的会话列表（按 region）。
+///
+/// 用 `list_sessions_with_fallback_for` 透传 `source` / `warning`：
+/// `source: "db"` 正常、`"scan"` 表示 db 不可读已降级扫描 projects 目录、
+/// `"empty"` 表示两个都空。前端据此区分「账号无会话」与「数据库不可读」。
 #[tauri::command]
 pub fn list_sessions(region: Option<String>) -> Value {
     let region = parse_region(region.as_deref());
     match session::current_user_uid_for(region) {
-        Some(uid) => json!({
-            "sessions": session::list_sessions_for_user_for(region, &uid),
-            "current": uid,
-        }),
-        None => json!({"sessions": [], "current": Value::Null}),
+        Some(uid) => {
+            let resp = session::list_sessions_with_fallback_for(region, &uid);
+            json!({
+                "sessions": resp.get("sessions").cloned().unwrap_or_else(|| json!([])),
+                "current": uid,
+                "source": resp.get("source").cloned().unwrap_or_else(|| json!("db")),
+                "warning": resp.get("warning").cloned(),
+            })
+        }
+        None => json!({ "sessions": [], "current": Value::Null, "source": "empty" }),
     }
 }
 
@@ -669,6 +702,23 @@ pub fn save_auto_travel_config(config: Value) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
+// 账号切换 / 账号列表展示（全局单份，无需 region）
+// ---------------------------------------------------------------------------
+
+/// GET /api/switch/config —— 账号切换与账号列表展示配置。
+#[tauri::command]
+pub fn get_switch_config() -> Value {
+    crate::modules::config::load_switch_config()
+}
+
+/// POST /api/switch/config —— 保存账号切换配置。
+#[tauri::command]
+pub fn save_switch_config(config: Value) -> Result<Value, String> {
+    crate::modules::config::save_switch_config(&config).map_err(|e| e.to_string())?;
+    Ok(crate::modules::config::load_switch_config())
+}
+
+// ---------------------------------------------------------------------------
 // 定时任务排程（六类积分任务，全局单份，无需 region）
 // ---------------------------------------------------------------------------
 
@@ -874,6 +924,97 @@ mod parse_trae_variant_tests {
         assert_eq!(parse_trae_variant(Some("")), default);
         assert_eq!(parse_trae_variant(Some("   ")), default);
         assert_eq!(parse_trae_variant(None), default);
+    }
+}
+
+/// `build_app_status` 的 `current.nickname` 护栏。
+///
+/// **与 `crates/buddy-switch-server/src/api.rs` 的
+/// `status_current_nickname_falls_back_to_account_library` 互为镜像**：
+/// 两个下发点（Tauri 宿主 / webui 服务）的 `current` 对象必须逐字同构
+/// （见 [`build_app_status`] 里那条互指注释），因此两边的断言也必须成对。
+///
+/// 现场（2026-09-24 用户截图）：新版客户端把认证文件的 `account.nickname`
+/// 存成加密信封 ⇒ 读不到 ⇒ 区域页签显示一串 UUID。账号库里有名字，按 uid 取回来。
+///
+/// 只钉**行为契约**（走 `build_app_status` 这个真实入口），
+/// 回落规则本身的分支覆盖在 core `account::current_nickname_for` 的单测里。
+#[cfg(test)]
+mod current_nickname_tests {
+    use super::build_app_status;
+    use buddy_switch_core::modules::account;
+    use buddy_switch_core::modules::auth_file;
+    use buddy_switch_core::modules::config::BUDDY_SWITCH_HOME_ENV;
+    use buddy_switch_core::modules::region::Region;
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    /// 本模块是 src-tauri 里**唯一**改 `BUDDY_SWITCH_HOME` 的测试；
+    /// 取锁保证它不与同 crate 的其它用例并行（进程级环境变量是共享状态）。
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_temp_home<T>(f: impl FnOnce() -> T) -> T {
+        let _lock = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-tauri-current-name-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp home");
+        let previous = std::env::var_os(BUDDY_SWITCH_HOME_ENV);
+        // `validate_home_override` 只接受**已存在**的目录，故上面先建好再设。
+        std::env::set_var(BUDDY_SWITCH_HOME_ENV, &dir);
+        let out = f();
+        match previous {
+            Some(value) => std::env::set_var(BUDDY_SWITCH_HOME_ENV, value),
+            None => std::env::remove_var(BUDDY_SWITCH_HOME_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
+    #[test]
+    fn current_nickname_falls_back_to_account_library() {
+        with_temp_home(|| {
+            let auth_path = auth_file::auth_file_path_for(Region::Cn);
+            std::fs::create_dir_all(auth_path.parent().unwrap()).expect("create auth dir");
+
+            account::save_accounts_for(
+                Region::Cn,
+                &[json!({
+                    "id": "seeded-cn-1", "uid": "uid-encrypted", "nickname": "Jackey",
+                    "access_token": "AT",
+                })],
+            )
+            .expect("seed accounts");
+
+            // 加密信封 ⇒ 读不到 ⇒ 回落账号库。
+            std::fs::write(
+                &auth_path,
+                r#"{"account":{"uid":"uid-encrypted","nickname":{"$wbEncrypted":1,"envelope":"eyJzdWl0ZSI6MX0="}},"auth":{"accessToken":"tok"}}"#,
+            )
+            .expect("seed auth file");
+            let status = build_app_status(Region::Cn);
+            assert_eq!(
+                status.current.as_ref().and_then(|c| c["nickname"].as_str()),
+                Some("Jackey"),
+                "认证文件读不到昵称时必须回落账号库，否则界面只能显示 uid"
+            );
+
+            // 阳性对照：认证文件有明文昵称 ⇒ 原样用，不被账号库覆盖。
+            std::fs::write(
+                &auth_path,
+                r#"{"account":{"uid":"uid-encrypted","nickname":"认证文件里的名字"},"auth":{"accessToken":"tok"}}"#,
+            )
+            .expect("reseed auth file");
+            let status = build_app_status(Region::Cn);
+            assert_eq!(
+                status.current.as_ref().and_then(|c| c["nickname"].as_str()),
+                Some("认证文件里的名字"),
+                "认证文件读得到昵称时不得被账号库覆盖"
+            );
+
+            let _ = std::fs::remove_file(&auth_path);
+        });
     }
 }
 
@@ -1567,6 +1708,16 @@ pub fn delete_trae_api_key(id: String) -> Result<Value, String> {
 #[tauri::command]
 pub fn open_trae_data_dir(variant: Option<String>) -> Result<Value, String> {
     trae::handlers::open_data_dir(parse_trae_variant(variant.as_deref()))
+}
+
+/// POST /api/trae/launch-client —— 启动**该变体**的 Trae 客户端（OAuth 的前置动作）。
+///
+/// 客户端从没启动过时，它的 `storage.json` 里没有 icube 设备凭证，OAuth 网页登录
+/// 必然以 `dataDirMissing` 失败。这个命令让用户**一键**跨过这道前置条件
+/// （动机与「启动成功 ≠ 凭证已就绪」的边界见 `handlers::launch_client_for`）。
+#[tauri::command]
+pub fn trae_launch_client(variant: Option<String>) -> Result<Value, String> {
+    trae::handlers::launch_client_for(parse_trae_variant(variant.as_deref()))
 }
 
 /// GET /api/trae/gateway/logs —— 最近 N 条请求日志（元数据）。

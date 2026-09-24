@@ -172,6 +172,9 @@ pub fn run() {
             commands::list_sessions,
             commands::copy_sessions,
             commands::migrate_account_data,
+            commands::set_account_remark,
+            commands::get_switch_config,
+            commands::save_switch_config,
             commands::open_permission_settings,
             commands::check_auth_permission,
             commands::reveal_app_in_finder,
@@ -262,6 +265,7 @@ pub fn run() {
             commands::revoke_trae_api_key,
             commands::delete_trae_api_key,
             commands::open_trae_data_dir,
+            commands::trae_launch_client,
             commands::get_trae_gateway_logs,
             commands::clear_trae_gateway_logs,
         ])
