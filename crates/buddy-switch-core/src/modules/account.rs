@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::modules::config::atomic_write;
+use crate::modules::identity;
 use crate::modules::region::{accounts_file_for, region_spec, Region};
 
 fn load_accounts_from_path(path: &Path) -> Vec<Value> {
@@ -356,7 +357,13 @@ pub fn build_auth_headers(account: &Value) -> HashMap<String, String> {
 /// 与 [`build_auth_headers`] 的差异（对齐官方客户端行为）：
 /// - `Accept` 声明 `text/event-stream`（chat 端点恒为 SSE）；
 /// - 附带 `Accept-Language`（CN `zh-CN` / Global `en-US`）；
-/// - 附带 `X-CodeBuddy-Request: 1` 与 `X-Agent-Purpose: conversation` 归属头。
+/// - 附带 `X-CodeBuddy-Request: 1` 与 `X-Agent-Purpose: conversation` 归属头；
+/// - 附带**官方 CLI 身份**的 `X-Agent-Intent` / `X-IDE-Type` / `X-IDE-Name` /
+///   `X-IDE-Version`（对照参考实现 `wb_identity.py`），与出站 UA
+///   [`crate::modules::identity::cli_user_agent`] 是**一对**，改一个就要改另一个。
+///
+/// `X-Product-Version` / `X-Env-ID` **刻意不发**：参考实现里它们属 VSCode 身份，
+/// 不属于 CLI 身份。
 pub fn build_chat_headers(region: Region, account: &Value) -> HashMap<String, String> {
     let mut headers = HashMap::new();
     let origin = region_spec(region).billing_base;
@@ -410,6 +417,15 @@ pub fn build_chat_headers(region: Region, account: &Value) -> HashMap<String, St
         }
     }
     headers.insert("X-Product".to_string(), "SaaS".to_string());
+    // 官方 CLI 身份（对照参考实现 `wb_identity.py`）：与出站 UA
+    // `CLI/<v> CodeBuddy/<v>` 是一对，两者版本号同源。
+    headers.insert("X-Agent-Intent".to_string(), "craft".to_string());
+    headers.insert("X-IDE-Type".to_string(), "CLI".to_string());
+    headers.insert("X-IDE-Name".to_string(), "CLI".to_string());
+    headers.insert(
+        "X-IDE-Version".to_string(),
+        identity::CLI_IDE_VERSION.to_string(),
+    );
     headers
 }
 
@@ -530,6 +546,34 @@ mod tests {
         assert_eq!(headers.get("X-No-Enterprise-Id").map(String::as_str), Some("1"));
         assert_eq!(headers.get("X-No-Department-Info").map(String::as_str), Some("1"));
         assert_eq!(headers.get("Origin").map(String::as_str), Some("https://www.workbuddy.ai"));
+    }
+
+    /// chat 出站身份必须是**官方 CLI 形态**（对照参考实现 `wb_identity.py`）。
+    ///
+    /// 这条同时钉住「刻意不发」的那两个头：`X-Product-Version` / `X-Env-ID` 属
+    /// VSCode 身份，CLI 身份带上它们会让上游看到自相矛盾的身份组合。
+    #[test]
+    fn build_chat_headers_carries_official_cli_identity() {
+        let acc = json!({"access_token": "AT", "uid": "u1"});
+        let headers = build_chat_headers(Region::Cn, &acc);
+
+        assert_eq!(headers.get("X-Agent-Intent").map(String::as_str), Some("craft"));
+        assert_eq!(headers.get("X-IDE-Type").map(String::as_str), Some("CLI"));
+        assert_eq!(headers.get("X-IDE-Name").map(String::as_str), Some("CLI"));
+        assert_eq!(
+            headers.get("X-IDE-Version").map(String::as_str),
+            Some(identity::CLI_IDE_VERSION),
+            "X-IDE-Version 必须与出站 UA 里的版本同源"
+        );
+        assert_eq!(headers.get("X-Product").map(String::as_str), Some("SaaS"));
+        assert!(
+            !headers.contains_key("X-Product-Version"),
+            "X-Product-Version 属 VSCode 身份，CLI 不该发"
+        );
+        assert!(
+            !headers.contains_key("X-Env-ID"),
+            "X-Env-ID 属 VSCode 身份，CLI 不该发"
+        );
     }
 
     fn account(id: &str, uid: Option<&str>, nickname: &str, email: Option<&str>) -> Value {

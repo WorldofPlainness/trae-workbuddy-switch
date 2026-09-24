@@ -1,12 +1,18 @@
-//! 客户端身份：版本解析链 + 国际版 UA 构造。
+//! 客户端身份：版本解析链 + 目录 UA 构造 + chat 出站身份。
 //!
-//! 对照参考实现 `app-version.ts` + `client-identity.ts`。
+//! 对照参考实现 `app-version.ts` + `client-identity.ts`；出站身份另对照
+//! `workbuddy2api-hub` 的 `wb_identity.py`。
 //!
 //! - 版本解析链：已安装 App → 保存值 → 内置兜底（永不阻断请求）。
 //! - 目录请求 UA：`WorkBuddyAI/<version>`（**绝对不能带空格**，带空格会被上游
-//!   拒为 HTTP 400 / code 12403）。
-//! - chat UA：`WorkBuddy/<v> WorkBuddy AI/<v>`（global）或
-//!   `WorkBuddy/<v> WorkBuddy/<v>`（cn），可选追加 `CLI/<cli>`。
+//!   拒为 HTTP 400 / code 12403）。**只有目录走 App 形态**，不要顺手改成 CLI：
+//!   单段的 `CLI/<v>` 打 `/v3/config` 会被同样以 12403 拒掉。
+//! - chat 出站身份：**固定为官方 CLI 形态**，见 [`cli_user_agent`]，以及
+//!   `account::build_chat_headers` 里配对的 `X-IDE-*` / `X-Agent-Intent`。
+//! - [`chat_user_agent`] / [`resolve_chat_identity`] / [`ChatIdentity`] 是 App
+//!   （VSCode）形态，**当前无调用方但刻意保留**：参考实现里两套身份可切换
+//!   （CLI / WorkBuddy），日后要切回或做自动切换（429 换身份）可直接取用。
+//!   这不是死代码遗漏，别当垃圾清掉。
 //!
 //! 版本号必须通过 [`valid_app_version`] 校验后才可拼进 header（防 header 注入）。
 
@@ -82,6 +88,20 @@ pub fn valid_cli_version(value: &str) -> bool {
     true
 }
 
+/// 官方 CLI 身份的版本号：`X-IDE-Version` 与 UA 的两段共用同一个值。
+pub const CLI_IDE_VERSION: &str = "2.63.2";
+
+/// 构造官方 CLI 形态的 chat UA：`CLI/<v> CodeBuddy/<v>`。
+///
+/// 两段式是**硬要求** —— 参考实现记载，单段的 `CLI/<v>` 会被上游以 code 12403
+/// （UA 版本解析失败）拒掉。
+///
+/// 这是当前 chat 出站的唯一身份（`UpstreamClient::resolve_chat_ua`），与
+/// [`chat_user_agent`] 的 App 形态相对；两者对应参考实现里可切换的两套身份。
+pub fn cli_user_agent() -> String {
+    format!("CLI/{CLI_IDE_VERSION} CodeBuddy/{CLI_IDE_VERSION}")
+}
+
 /// 构造 App 形态 UA（目录请求用）。版本非法即报错，不发送畸形 header。
 pub fn app_user_agent(version: &str) -> Result<String, String> {
     if !valid_app_version(version) {
@@ -92,10 +112,13 @@ pub fn app_user_agent(version: &str) -> Result<String, String> {
     Ok(format!("WorkBuddyAI/{version}"))
 }
 
-/// 构造 chat 形态 UA。
+/// 构造 App（VSCode）形态的 chat UA。
 ///
 /// `region` 决定产品 token：Global 用 `WorkBuddy AI`，CN 用 `WorkBuddy`。
 /// `cli_version` 存在时追加 `CLI/<cli>`。版本非法即报错。
+///
+/// **当前无调用方**：chat 出站身份已固定为 CLI（见 [`cli_user_agent`]）。此处刻意
+/// 保留 App 形态，供日后切回或做身份自动切换；不是死代码遗漏。
 pub fn chat_user_agent(
     region: Region,
     client_version: &str,
@@ -297,6 +320,16 @@ mod tests {
         assert!(app_user_agent("5.5.2\r\nX: y").is_err());
         assert!(app_user_agent("").is_err());
         assert!(app_user_agent("5.5.2-x").is_err());
+    }
+
+    #[test]
+    fn cli_user_agent_is_two_segment_and_safe_to_embed() {
+        // 单段 `CLI/<v>` 会被上游以 12403 拒掉，两段是硬要求。
+        assert_eq!(cli_user_agent(), "CLI/2.63.2 CodeBuddy/2.63.2");
+        assert!(
+            valid_cli_version(CLI_IDE_VERSION),
+            "版本号必须能安全拼进 header：{CLI_IDE_VERSION:?}"
+        );
     }
 
     #[test]

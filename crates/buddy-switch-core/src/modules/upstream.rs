@@ -19,9 +19,6 @@ use crate::modules::identity;
 use crate::modules::net;
 use crate::modules::region::{region_spec, CatalogUa, Region};
 
-/// 共享 CLI 形态 UA（刷新 / CN 目录使用）。
-pub const CLIENT_UA: &str = "CLI/2.63.2 CodeBuddy/2.63.2";
-
 /// 错误响应体读取上限（字节）。
 const ERROR_BODY_LIMIT: usize = 4096;
 
@@ -350,16 +347,10 @@ impl UpstreamClient {
         signal: Option<watch::Receiver<bool>>,
         extra_headers: Option<&HashMap<String, String>>,
     ) -> UpstreamChatResult {
-        let user_agent = match self.resolve_chat_ua(region) {
-            Ok(ua) => ua,
-            Err(message) => {
-                return UpstreamChatResult::Err {
-                    status: 0,
-                    kind: UpstreamErrorKind::Server,
-                    message,
-                }
-            }
-        };
+        // chat 出站身份固定为官方 CLI 形态（与 `build_chat_headers` 的 X-IDE-* 配对）。
+        // 不再按 region 派生 App 形态 —— 那个构造函数保留在
+        // [`identity::chat_user_agent`]，日后要切回身份只需改这一处。
+        let user_agent = identity::cli_user_agent();
 
         let url = format!("{}/v2/chat/completions", region_spec(region).chat_base);
         let mut headers = account::build_chat_headers(region, acc);
@@ -510,9 +501,9 @@ impl UpstreamClient {
         let url = format!("{}{}", spec.chat_base, spec.models_path);
         let user_agent = if international {
             let info = identity::resolve_app_version(region);
-            identity::app_user_agent(&info.version).unwrap_or_else(|_| CLIENT_UA.to_string())
+            identity::app_user_agent(&info.version).unwrap_or_else(|_| identity::cli_user_agent())
         } else {
-            CLIENT_UA.to_string()
+            identity::cli_user_agent()
         };
 
         let mut headers = HashMap::new();
@@ -718,14 +709,6 @@ impl UpstreamClient {
         }
         Ok(Credits { total, accounts })
     }
-
-    fn resolve_chat_ua(&self, region: Region) -> Result<String, String> {
-        let identity = identity::resolve_chat_identity(region);
-        identity::chat_user_agent(region, &identity.client_version, identity.cli_version.as_deref())
-            .or_else(|_| {
-                identity::chat_user_agent(region, region_spec(region).fallback_app_version, None)
-            })
-    }
 }
 
 /// 共享 CLI 请求头（刷新 / 目录使用）。
@@ -739,7 +722,7 @@ fn common_headers(region: Region) -> HashMap<String, String> {
     headers.insert("X-Requested-With".to_string(), "XMLHttpRequest".to_string());
     headers.insert("Origin".to_string(), origin.to_string());
     headers.insert("Referer".to_string(), format!("{origin}/"));
-    headers.insert("User-Agent".to_string(), CLIENT_UA.to_string());
+    headers.insert("User-Agent".to_string(), identity::cli_user_agent());
     headers
 }
 
