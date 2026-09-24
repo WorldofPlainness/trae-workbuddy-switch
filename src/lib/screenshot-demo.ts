@@ -573,6 +573,16 @@ function demoCatalog(region: Region): CatalogSnapshot {
   const models = region === "global"
     ? ["GPT-5.6", "Claude-Sonnet-4.5", "Gemini-3-Pro", "GLM-5.3", "DeepSeek-V4-Pro"]
     : ["GLM-5.3", "GLM-5.2", "DeepSeek-V4-Pro", "Kimi-K3", "hy3"];
+  // 费率要覆盖四档 + 免费（免费时费率标签被「免费」徽标取代），否则演示/截图里
+  // 大多数模型 `credits` 为空，看不出配色分层。
+  // 后四项是**数据值**（上游 credits 原串形态），不是界面文案，故不进词表。
+  const credits = [
+    t("shared.demo.catalog.limitedFree"),
+    "x0.05",
+    "x0.35",
+    "x0.79",
+    "x2.10",
+  ];
   return {
     region,
     source: region === "global" ? "cached" : "live",
@@ -583,9 +593,9 @@ function demoCatalog(region: Region): CatalogSnapshot {
       context_window: 131072,
       max_tokens: 8192,
       supports_images: index % 3 === 0,
-      credits: index % 4 === 0 ? t("shared.demo.catalog.limitedFree") : null,
+      credits: credits[index] ?? null,
       badges: index === 0 ? [t("shared.demo.catalog.promo")] : [],
-      free: index % 4 === 0,
+      free: index === 0,
     })),
     note: region === "global" ? t("shared.demo.catalog.globalStale") : null,
   };

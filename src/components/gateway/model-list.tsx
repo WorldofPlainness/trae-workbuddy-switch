@@ -9,6 +9,7 @@ import { DemoAction } from "@/components/demo-action";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import * as api from "@/lib/api";
 import { useT } from "@/lib/i18n";
+import { parseCreditsMultiplier, rateBand, type RateBand } from "@/lib/model-rate";
 import { REGIONS, regionDescriptor } from "@/lib/region";
 import { cn } from "@/lib/utils";
 import type { TranslationKey } from "@/locales/zh";
@@ -22,6 +23,19 @@ const SOURCE_LABEL: Record<CatalogSource, { labelKey: TranslationKey; variant: "
   builtin: { labelKey: "wbStats.gateway.sourceBuiltin", variant: "warning" },
 };
 
+/**
+ * 费率档位 → 徽标配色：越低越划算（绿 → 天蓝 → 中性 → 琥珀）。
+ *
+ * 中性灰代表「接近基准价」，琥珀代表溢价；无法解析出数值时同样走中性，
+ * 以免把形态不明的上游字符串渲染成「便宜」或「贵」的误导性暗示。
+ */
+const RATE_BAND_VARIANT: Record<RateBand, "success" | "info" | "secondary" | "warning"> = {
+  veryCheap: "success",
+  cheap: "info",
+  baseline: "secondary",
+  premium: "warning",
+};
+
 function formatTime(ts: number | null): string {
   if (!ts) return "—";
   const date = new Date(ts);
@@ -29,7 +43,12 @@ function formatTime(ts: number | null): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-/** 模型列表：按 region 切换，展示来源徽标（实时 / 已保存 / 内置）与刷新按钮（P0-4 / P0-12 / P1-7）。 */
+/**
+ * 模型列表：按 region 切换，展示来源徽标（实时 / 已保存 / 内置）与刷新按钮（P0-4 / P0-12 / P1-7）。
+ *
+ * 每个模型带**费率标签**：上游 `credits` 原串按解析出的倍率分四档配色（见
+ * [`RATE_BAND_VARIANT`]）；免费模型只显示「免费」徽标，不重复显示费率。
+ */
 export function ModelList({ className }: { className?: string }) {
   const t = useT();
   const [region, setRegion] = useState<Region>("cn");
@@ -92,29 +111,43 @@ export function ModelList({ className }: { className?: string }) {
           <p className="py-4 text-sm text-muted-foreground">{t("wbStats.gateway.noModels")}</p>
         ) : (
           <div className="flex flex-wrap gap-2">
-            {snapshot.models.map((model) => (
-              <span
-                key={model.id}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs"
-                title={`${t("wbStats.gateway.modelTitle", {
-                  name: model.name,
-                  context: model.context_window,
-                  max: model.max_tokens,
-                })}${model.credits ? ` · ${model.credits}` : ""}`}
-              >
-                <span className="font-medium">{model.name}</span>
-                {model.free && (
-                  <Badge variant="success" className="rounded-md px-1.5 py-0 text-[10px]">
-                    {t("wbStats.gateway.free")}
-                  </Badge>
-                )}
-                {model.badges.map((badge) => (
-                  <Badge key={badge} variant="warning" className="rounded-md px-1.5 py-0 text-[10px]">
-                    {badge}
-                  </Badge>
-                ))}
-              </span>
-            ))}
+            {snapshot.models.map((model) => {
+              // 免费模型已由「免费」徽标说明，费率信息本身也没意义，不再重复展示。
+              const rate = model.free ? "" : (model.credits ?? "").trim();
+              const band = rateBand(parseCreditsMultiplier(rate));
+              return (
+                <span
+                  key={model.id}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 py-1 text-xs"
+                  title={`${t("wbStats.gateway.modelTitle", {
+                    name: model.name,
+                    context: model.context_window,
+                    max: model.max_tokens,
+                  })}`}
+                >
+                  <span className="font-medium">{model.name}</span>
+                  {rate && (
+                    <Badge
+                      variant={band ? RATE_BAND_VARIANT[band] : "secondary"}
+                      className="rounded-md px-1.5 py-0 text-[10px]"
+                      title={t("wbStats.gateway.rateTitle", { credits: rate })}
+                    >
+                      {rate}
+                    </Badge>
+                  )}
+                  {model.free && (
+                    <Badge variant="success" className="rounded-md px-1.5 py-0 text-[10px]">
+                      {t("wbStats.gateway.free")}
+                    </Badge>
+                  )}
+                  {model.badges.map((badge) => (
+                    <Badge key={badge} variant="warning" className="rounded-md px-1.5 py-0 text-[10px]">
+                      {badge}
+                    </Badge>
+                  ))}
+                </span>
+              );
+            })}
           </div>
         )}
       </div>

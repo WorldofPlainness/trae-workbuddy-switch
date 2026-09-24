@@ -200,6 +200,7 @@ export const zh = {
   "wbStats.gateway.noModels": "暂无模型数据。",
   "wbStats.gateway.modelTitle": "{name} · 上下文 {context} · 最大输出 {max}",
   "wbStats.gateway.free": "免费",
+  "wbStats.gateway.rateTitle": "费率：{credits}",
   "wbStats.gateway.createKey": "创建 API Key",
   "wbStats.gateway.noKeys": "尚未创建 API Key。",
   "wbStats.gateway.revoked": "已吊销",

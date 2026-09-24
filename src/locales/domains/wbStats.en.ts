@@ -195,6 +195,7 @@ export const en = {
   "wbStats.gateway.noModels": "No model data.",
   "wbStats.gateway.modelTitle": "{name} · context {context} · max output {max}",
   "wbStats.gateway.free": "Free",
+  "wbStats.gateway.rateTitle": "Rate: {credits}",
   "wbStats.gateway.createKey": "Create API Key",
   "wbStats.gateway.noKeys": "No API Keys created yet.",
   "wbStats.gateway.revoked": "Revoked",
